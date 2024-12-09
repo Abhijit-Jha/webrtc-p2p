@@ -30,7 +30,7 @@ const Sender = () => {
             await pc.setLocalDescription(offer);
             //("local",pc.localDescription)
             //send the offer to the reciever
-            socket?.send(JSON.stringify({ type: "createOffer", sdp: offer.sdp })); //or pc.localDescription
+            socket?.send(JSON.stringify({ type: "createOffer", sdp: pc.localDescription })); //or pc.localDescription
         }
 
 

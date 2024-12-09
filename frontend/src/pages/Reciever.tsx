@@ -1,34 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
-
+import { useEffect, useRef } from 'react'
 
 const Reciever = () => {
-    const [socket, setSocket] = useState<WebSocket | null>(null);
-    // const [pc, setPC] = useState<RTCPeerConnection | null>(null)
+
+
     const videoRef = useRef<HTMLVideoElement>(null)
     useEffect(() => {
         const recieverSocket = new WebSocket("ws://localhost:8080");
         recieverSocket.onopen = () => {
             recieverSocket.send(JSON.stringify({ type: "reciever" }))
-            setSocket(recieverSocket)
         }
+        let pc: RTCPeerConnection | null = null;
 
         recieverSocket.onmessage = async (event: any) => {
             const message = JSON.parse(event.data);
-            let pc: RTCPeerConnection | null = null;
             //set Remote Description
             if (message.type == "createOffer") {
-                pc = new RTCPeerConnection()
-                // setPC(pc)
-                const remoteDesc: RTCSessionDescriptionInit = {
-                    type: "offer",  // The type should be "offer"
-                    sdp: message.sdp,  // The actual SDP string from the message
-                };
+                pc = new RTCPeerConnection();
 
-                // Set the remote description using the formatted object
-                await pc.setRemoteDescription(remoteDesc);
+                // Set the remote description 
+                pc.setRemoteDescription(message.sdp);
                 //ioce candidate
                 pc.onicecandidate = (event: any) => {
                     if (event.candidate) {
+
                         console.log("EEEVEEENT", event)
                         recieverSocket.send(JSON.stringify({ type: "iceCandidate", candidate: event.candidate }))
                     }
@@ -36,33 +30,36 @@ const Reciever = () => {
 
                 // adding track here
                 pc.ontrack = (event) => {
-                    console.log("HELLO")
-                    if (videoRef.current) {
-                        videoRef.current.srcObject = new MediaStream([event.track])
-                        videoRef.current.play()
-                    }
+                    console.log("on track")
                     const video = document.createElement("video")
+                    document.body.appendChild(video)
                     video.srcObject = new MediaStream([event.track])
+                    video.setAttribute("playsinline", "true");
                     video.play()
                 }
 
                 const answer = await pc.createAnswer()
                 //set Local Description
                 await pc.setLocalDescription(answer);
-                recieverSocket.send(JSON.stringify({ type: "createAnswer", sdp: pc.localDescription }))
-                console.log("answer",pc)
+                recieverSocket.send(JSON.stringify({ type: "createAnswer", sdp: answer }))
+                console.log("answer", pc)
             } else if (message.type == "iceCandidate") {
-                //@ts-ignore
-                pc?.addIceCandidate(message.candidate)
+                console.log("ice candidate", pc)
+                if (pc != null) {
+                    console.log("hell")
+                    //@ts-ignore
+                    pc.addIceCandidate(message.candidate)
+                } else {
+                    console.log("no pc")
+                }
             }
-
         }
     }, [])
 
     return (
         <div>
             Reciever
-            <video ref={videoRef} style={{ width: "100%", height: "auto" }}></video>
+            {/* <video ref={videoRef} style={{ width: "100%", height: "auto" }}></video> */}
         </div>
     )
 }
