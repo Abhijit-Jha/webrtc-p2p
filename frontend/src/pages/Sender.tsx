@@ -9,6 +9,7 @@ const Sender = () => {
             //("sender socket opened");
             senderSocket.send(JSON.stringify({ type: "sender" }))
         }
+        
     }, [])
 
     async function startSendingVideo() {
@@ -63,12 +64,20 @@ const Sender = () => {
             console.log("track added");
             console.log(track);
             pc.addTrack(track);
-            
+
         }); // it will send it to the other side
-        console.log("PC after ",pc);
+        console.log("PC after ", pc);
         console.log("video/audio object", stream)
 
-
+        //add the video to the dom
+        const video = document.createElement("video")
+        document.body.appendChild(video)
+        video.srcObject = stream
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("controls", "true");
+        video.play()
+        console.log("video", video)
+        
     }
     return (
         <div>
