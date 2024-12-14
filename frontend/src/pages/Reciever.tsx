@@ -1,67 +1,109 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useState, useRef } from "react";
 
-const Reciever = () => {
+const Receiver = () => {
+    const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+    const videoRef = useRef<HTMLVideoElement | null>(null);
 
-
-    const videoRef = useRef<HTMLVideoElement>(null)
     useEffect(() => {
-        const recieverSocket = new WebSocket("ws://localhost:8080");
-        recieverSocket.onopen = () => {
-            recieverSocket.send(JSON.stringify({ type: "reciever" }))
-        }
+        const receiverSocket = new WebSocket("ws://localhost:8080");
+
         let pc: RTCPeerConnection | null = null;
+        const mediaStream = new MediaStream();
 
-        recieverSocket.onmessage = async (event: any) => {
+        receiverSocket.onopen = () => {
+            console.log("Socket open");
+            receiverSocket.send(JSON.stringify({ type: "reciever" }));
+        };
+
+        receiverSocket.onerror = (err) => {
+            console.error("WebSocket error:", err);
+        };
+
+        receiverSocket.onclose = () => {
+            console.log("Socket closed");
+        };
+
+        const setupPeerConnection = () => {
+            pc = new RTCPeerConnection();
+
+            // Handle track events
+            pc.ontrack = (event) => {
+                console.log("Track received");
+                event.streams[0].getTracks().forEach((track) => mediaStream.addTrack(track));
+                setVideoStream(mediaStream);
+            };
+
+            // Handle ICE candidate generation
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log("ICE candidate generated:", event.candidate);
+                    receiverSocket.send(JSON.stringify({ type: "iceCandidate", candidate: event.candidate }));
+                }
+            };
+        };
+
+        receiverSocket.onmessage = async (event) => {
             const message = JSON.parse(event.data);
-            //set Remote Description
-            if (message.type == "createOffer") {
-                pc = new RTCPeerConnection();
+            if (!pc) setupPeerConnection();
 
-                // Set the remote description 
-                pc.setRemoteDescription(message.sdp);
-                //ioce candidate
-                pc.onicecandidate = (event: any) => {
-                    if (event.candidate) {
+            // Handle offer
+            if (message.type === "createOffer") {
+                console.log("Received offer");
+                await pc?.setRemoteDescription(new RTCSessionDescription(message.sdp));
+                console.log("Remote description set");
 
-                        console.log("EEEVEEENT", event)
-                        recieverSocket.send(JSON.stringify({ type: "iceCandidate", candidate: event.candidate }))
-                    }
-                }
+                // Create and send answer
+                const answer = await pc?.createAnswer();
+                await pc?.setLocalDescription(answer);
+                receiverSocket.send(JSON.stringify({ type: "createAnswer", sdp: pc?.localDescription }));
+                console.log("Answer created and sent:", pc?.localDescription);
+            }
 
-                // adding track here
-                pc.ontrack = (event) => {
-                    console.log("on track")
-                    const video = document.createElement("video")
-                    document.body.appendChild(video)
-                    video.srcObject = new MediaStream([event.track])
-                    video.setAttribute("playsinline", "true");
-                    video.play()
-                }
-
-                const answer = await pc.createAnswer()
-                //set Local Description
-                await pc.setLocalDescription(answer);
-                recieverSocket.send(JSON.stringify({ type: "createAnswer", sdp: answer }))
-                console.log("answer", pc)
-            } else if (message.type == "iceCandidate") {
-                console.log("ice candidate", pc)
-                if (pc != null) {
-                    console.log("hell")
-                    //@ts-ignore
-                    pc.addIceCandidate(message.candidate)
-                } else {
-                    console.log("no pc")
+            // Handle ICE candidate
+            else if (message.type === "iceCandidate") {
+                try {
+                    await pc?.addIceCandidate(new RTCIceCandidate(message.candidate));
+                    console.log("ICE candidate added:", message.candidate);
+                } catch (error) {
+                    console.error("Error adding ICE candidate:", error);
                 }
             }
+        };
+
+        return () => {
+            pc?.close();
+            receiverSocket.close();
+            console.log("Cleaned up");
+        };
+    }, []);
+
+    const playVideo = () => {
+        if (videoStream && videoRef.current) {
+            videoRef.current.srcObject = videoStream;
+            videoRef.current.play().then(() => {
+                console.log("Video playback started");
+            }).catch((error) => {
+                console.error("Video playback failed:", error);
+            });
+        } else {
+            console.log("No video stream available");
         }
-    }, [])
+    };
 
     return (
         <div>
-            Reciever
-            {/* <video ref={videoRef} style={{ width: "100%", height: "auto" }}></video> */}
+            <h1>Receiver</h1>
+            <button onClick={playVideo} style={{ padding: "10px", margin: "10px" }}>
+                Play Video
+            </button>
+            <video
+                ref={videoRef}
+                style={{ width: "100%", maxWidth: "600px", border: "1px solid black" }}
+                controls
+                playsInline
+            />
         </div>
-    )
-}
+    );
+};
 
-export default Reciever
+export default Receiver;

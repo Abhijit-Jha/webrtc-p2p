@@ -1,0 +1,231 @@
+//ImageUtil with queue
+import fs from 'fs-extra';
+import path from 'path';
+import sharp from 'sharp';
+import { logger } from '../../../common/logger';
+import { publicPath } from '../../../common/commonConstants';
+import { imgGenApi_HF, imgGenApi } from '../promptAI/imgGen';
+import { limitAndSanitize, parseAITool } from './aiUtils';
+import PQueue from 'p-queue';
+
+// Configure queue for 3 images per minute
+const imageQueue = new PQueue({
+  concurrency: 1,
+  interval: 20000, // 20 seconds between each image
+  intervalCap: 1   // One operation per interval
+});
+
+imageQueue.on('active', () => {
+  logger({
+    level: 'info',
+    save: ['db'],
+    msg: `Working on image. Queue size: ${imageQueue.size}`,
+    data: '',
+  });
+});
+
+imageQueue.on('completed', result => {
+  logger({
+    level: 'info',
+    save: ['db'],
+    msg: 'Image generation completed',
+    data: result,
+  });
+});
+
+export async function saveImg({ imgData, imgPath, curriculumId }) {
+    try {
+    imgPath = `${publicPath}${imgPath}`;
+    const outputPath = imgPath.endsWith('.webp') ? imgPath : `${imgPath}.webp`;
+
+    const directory = path.dirname(outputPath);
+    if (!fs.existsSync(directory)) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+
+    logger({
+      level: 'log',
+      save: ['db'],
+      parent: curriculumId,
+      msg: `imgData:`,
+      data: `${imgData.substring(0, 10)}...`,
+    });
+
+    const buffer = Buffer.from(imgData, 'base64');
+
+    await sharp(buffer)
+      .toFormat('webp')
+      .toFile(outputPath)
+      .then(() => {
+        logger({
+          level: 'info',
+          save: ['db'],
+          parent: curriculumId,
+          msg: `Image saved to ${outputPath}`,
+          data: '',
+        });
+
+        if (fs.existsSync(outputPath)) {
+          const stats = fs.statSync(outputPath);
+          if (stats.size > 0) {
+            logger({
+              level: 'info',
+              save: ['db'],
+              parent: curriculumId,
+              msg: `File size: ${stats.size} bytes`,
+              data: '',
+            });
+          } else {
+            logger({
+              level: 'error',
+              save: ['db'],
+              parent: curriculumId,
+              msg: `Error: Image file was created, but it's empty.`,
+              data: '',
+            });
+          }
+        } else {
+          logger({
+            level: 'error',
+            save: ['db'],
+            parent: curriculumId,
+            msg: `Error: Image file was not created.`,
+            data: '',
+          });
+        }
+      })
+      .catch((err) => {
+        logger({
+          level: 'error',
+          save: ['db'],
+          parent: curriculumId,
+          msg: `Error saving image to ${outputPath}: ${err}`,
+          data: '',
+        });
+      });
+  } catch (error) {
+    logger({
+      level: 'error',
+      save: ['db'],
+      parent: curriculumId,
+      msg: `Error processing image data: ${error}`,
+      data: '',
+    });
+  }
+}
+
+export async function generateAndSaveImg({
+    vendor = 'OPEN_AI',
+    imgPromptTxt,
+    model = 'dall-e-3',
+    imgPath,
+    curriculumId,
+    isInBatch = false
+}) {
+  return imageQueue.add(async () => {
+    let imgData: string | undefined | void = '';
+
+    if (vendor === 'HUGGING_FACE') {
+      const modelParts = model.split(':');
+      if (modelParts.length !== 2) {
+        return console.error(
+          `generateAndSaveImg(): imgGenerateAiTool property expected in the format "HUGGING_FACE/vendor:model" for hugging face, received: ${model}`
+        );
+      }
+      vendor = modelParts[0];
+      model = modelParts[1];
+      //@ts-ignore
+      imgData = await imgGenApi_HF({
+        vendor,
+        model,
+        textPrompt: `${imgPromptTxt} - variation ${imgPath.slice(-1)}`, // Add variation to prompt
+        isMock: false,
+      });
+    } else {
+      imgData = await imgGenApi({
+        vendor,
+        textPrompt: `${imgPromptTxt} - variation ${imgPath.slice(-1)}`, // Add variation to prompt
+        model,
+        imgsNo: 1,
+        size: '1024x1024',
+        quality: 'hd',
+        response_format: 'b64_json',
+      });
+    }
+
+    logger({
+      level: 'info',
+      save: ['db'],
+      parent: curriculumId,
+      msg: "generateAndSaveImg",
+      data: `${imgData?.substring(0, 10)}...`,
+    });
+
+    imgData && (await saveImg({ imgData, imgPath, curriculumId }));
+    return imgData;
+  });
+}
+export function getImgCreationDetails(
+  data: any,
+  skillNameUpdated: string,
+  curriculumId: string,
+  getSubTopicFromPromptText: () => string,
+  mlConstants: any
+) {
+  for (const item of data) {
+    if (item.element.includes('imgPrompt')) {
+      const { content: imgPromptTxt, subDirName } = item,
+        imgName = `${subDirName}_${limitAndSanitize(
+          getSubTopicFromPromptText()
+        )}`;
+
+      item.imgPath = `${mlConstants.mlAssetsPath}${skillNameUpdated}/${subDirName}/${imgName}`;
+
+      logger({
+        level: 'info',
+        save: ['db'],
+        parent: curriculumId,
+        msg: `getImgCreationDetails`,
+        data: { imgPromptTxt },
+      });
+      return [imgPromptTxt, item.imgPath];
+    }
+  }
+  return [null, null];
+}
+
+export async function handleImgCreation({
+  imgGenerateAiTool,
+  resp,
+  promptsObj,
+  promptKey,
+  skillNameUpdated,
+  curriculumId,
+  getSubTopicFromPromptText,
+  mlConstants,
+}) {
+  if (imgGenerateAiTool) {
+    console.info(`In imgGenerateAiTool, checking resp:, resp`);
+    const [imgPromptTxt, imgPath] = getImgCreationDetails(
+      resp[0].render,
+      skillNameUpdated,
+      curriculumId,
+      getSubTopicFromPromptText,
+      mlConstants
+    );
+
+    if (!imgPromptTxt) {
+      return;
+    }
+
+    const { vendor, model } = parseAITool(imgGenerateAiTool);
+    await generateAndSaveImg({
+        vendor,
+        imgPromptTxt,
+        model,
+        imgPath,
+        curriculumId,
+        isInBatch: false
+      });
+  }
+}
